@@ -1,0 +1,148 @@
+- name: Install AWX
+  hosts: awx_lab
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Set facts based on OpenSUSE Tumbleweed
+      when: ansible_distribution == "openSUSE Tumbleweed"
+      ansible.builtin.set_fact:
+        prereg_packages:
+          - python311-kubernetes
+          - curl
+          - helm
+
+    - name: Set facts based on OpenSUSE Leap and RedHat
+      when: ansible_distribution == "openSUSE Leap" or ansible_distribution == "RedHat"
+      ansible.builtin.set_fact:
+        prereg_packages:
+          - python3-kubernetes
+          - curl
+          - helm
+
+    - name: Enable RedHat repositories needed
+      when: ansible_distribution == "RedHat"
+      community.general.dnf_config_manager:
+        name:
+          - ansible-automation-platform-2.4-for-rhel-9-x86_64-rpms
+          - ocp-tools-4.16-for-rhel-9-x86_64-rpms
+        state: enabled
+
+    - name: Install prereq packages
+      ansible.builtin.package:
+        name: "{{ item }}"
+        state: present
+      with_items: "{{ prereg_packages }}"
+
+
+    - name: Install helm-diff
+      kubernetes.core.helm_plugin:
+        plugin_path: "https://github.com/databus23/helm-diff"
+        state: present
+
+    - name: Stop firewalld
+      ansible.builtin.service:
+        name: firewalld
+        state: stopped
+
+    - name: Create rancher config directory
+      ansible.builtin.file:
+        path: /etc/rancher/k3s
+        owner: root
+        group: root
+        mode: "0755"
+        state: directory
+
+    - name: Copy local registry configuration
+      when: local_registry
+      ansible.builtin.copy:
+        src: registries.yaml
+        dest: /etc/rancher/k3s/registries.yaml
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Get installed k3s version # noqa risky-shell-pipe
+      ansible.builtin.shell:
+        cmd: /usr/local/bin/k3s --version >> /dev/null && /usr/local/bin/k3s --version | grep "k3s version" | cut -d " " -f 3
+      register: installed_k3s_version
+      changed_when:
+        - installed_k3s_version.stdout != k3s_version
+      failed_when:
+        - installed_k3s_version.rc != 0
+        - installed_k3s_version.rc != 127
+
+    - name: Install k3s server
+      when: installed_k3s_version.changed
+      ansible.builtin.shell:
+        cmd: curl -sfL https://get.k3s.io | sh -
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+        INSTALL_K3S_SKIP_START: "true"
+        K3S_KUBECONFIG_MODE: "644"
+
+    - name: Restart k3s service after upgrade
+      when: installed_k3s_version.changed
+      ansible.builtin.service:
+        name: k3s
+        state: restarted
+
+    - name: Check if AWX certificate files exists
+      ansible.builtin.stat:
+        path: /tmp/awx-tls.key
+      register: awx_cert
+
+    - name: Create AWX certificate
+      ansible.builtin.command: openssl req -x509 -nodes -days 3650 -newkey rsa:2048 -out /tmp/awx-tls.crt -keyout /tmp/awx-tls.key -subj "/CN=${AWX_HOST}/O={{ awx_fqdn }}" -addext "subjectAltName = DNS:{{ awx_fqdn }}"
+      args:
+        creates: /tmp/awx/tls.crt
+      when: not awx_cert.stat.exists
+
+    - name: Wait until cluster API is up
+      ansible.builtin.wait_for:
+        port: 6443
+
+    - name: Create AWX namespace
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        name: "{{ awx_namespace }}"
+        api_version: v1
+        kind: Namespace
+        state: present
+
+    - name: Add awx-operator helm repo
+      kubernetes.core.helm_repository:
+        name: awx-operator
+        repo_url: https://ansible-community.github.io/awx-operator-helm/
+
+    - name: Install awx-operator
+      kubernetes.core.helm:
+        name: awx-operator
+        kubeconfig: "{{ kubeconfig }}"
+        namespace: "{{ awx_namespace }}"
+        chart_ref: awx-operator/awx-operator
+        chart_version: "{{ awx_operator_version }}"
+
+    - name: Check if AWX tls secret exists
+      ansible.builtin.shell:
+        cmd: /usr/local/bin/k3s kubectl -n {{ awx_namespace }} get secrets
+      register: awx_secrets
+      changed_when: false
+
+    - name: Create AWX tls secret
+      ansible.builtin.shell:
+        cmd: /usr/local/bin/k3s kubectl -n {{ awx_namespace }} create secret tls awx-secret-tls --cert=/tmp/awx-tls.crt --key=/tmp/awx-tls.key
+      when: awx_secrets.stdout.find('awx-secret-tls') == -1
+
+    - name: Install AWX manifests
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        namespace: "{{ awx_namespace }}"
+        definition: "{{ lookup('template', '{{ item }}') }}"
+      loop:
+        - awx-admin-password.yaml
+        - awx-postgres-configuration.yaml
+        - awx.yaml
+
+    - name: Finished the playbook
+      ansible.builtin.debug:
+        msg: "Follow the installation with: kubectl -n {{ awx_namespace }} logs -f deployments/awx-operator-controller-manager"

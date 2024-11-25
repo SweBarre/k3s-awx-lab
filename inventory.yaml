@@ -1,0 +1,22 @@
+---
+awx_lab:
+  hosts:
+    localhost:
+      k3s_version: v1.31.1+k3s1
+      kubeconfig: "/etc/rancher/k3s/k3s.yaml"
+      local_registry: false
+      awx_namespace: awx
+      awx_operator_version: 2.19.1
+      awx_admin_password: password123456789
+      awx_fqdn: awx.example.com
+      awx_postgres_password: password_abc_123
+      awx_postgres_type: managed
+      awx_postgres_username: awx
+      awx_postgres_database: awx
+      awx_postgres_host: awx-postgres-15
+      awx_postgres_port: "5432"
+      awx_postres_storage_class: local-path
+      awx_postres_storage_size: 4Gi
+      awx_projects_storage_class: local-path
+      awx_projects_storage_size: 2Gi
+      awx_nolog: false # Change this to false when debugging

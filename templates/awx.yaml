@@ -1,0 +1,41 @@
+---
+apiVersion: awx.ansible.com/v1beta1
+kind: AWX
+metadata:
+  name: awx
+spec:
+  no_log: {{ awx_nolog }}
+  ipv6_disabled: true
+  admin_user: admin
+  admin_password_secret: awx-admin-password
+
+  ingress_type: ingress
+  ingress_hosts:
+    - hostname: {{ awx_fqdn }}
+      tls_secret: awx-secret-tls
+  ingress_annotations: |
+    testing.testing: whohoo
+
+  postgres_configuration_secret: awx-postgres-configuration
+
+  postgres_data_volume_init: true
+  postgres_storage_class: {{ awx_postres_storage_class }}
+  postgres_storage_requirements:
+    requests:
+      storage: {{ awx_postres_storage_size }}
+
+  projects_persistence: true
+  projects_storage_size: {{ awx_projects_storage_size }}
+  projects_storage_access_mode: ReadWriteOnce
+  projects_storage_class: {{ awx_projects_storage_class }}
+
+  web_replicas: 1
+  task_replicas: 1
+
+  web_resource_requirements: {}
+  task_resource_requirements: {}
+  ee_resource_requirements: {}
+  init_container_resource_requirements: {}
+  postgres_resource_requirements: {}
+  redis_resource_requirements: {}
+  rsyslog_resource_requirements: {}
